@@ -1,9 +1,9 @@
--- | A category of found & parsed objects. Unfound or improperly-formatted objects are collected, thus failing the whole computation while still trying to compute it up to finding-then-parsing objects, as far as it can. Often a program will say "x not found," so you set x, only for the program to now say that y isn't found. LookupT removes this pain by telling /all/ missing or improperly-formatted variables at once.
+-- | A category of found & parsed objects. Parsing is interpreted as validation (@Either@ with accumulating rather than short-circuiting @Applicative@ instance. Not to be confused with <http://hackage.haskell.org/package/validity-0.9.0.1/docs/Data-Validity.html validity> in the sense of testing properties.) Unfound or improperly-formatted objects are collected, thus failing the whole computation while still trying to compute it up to finding-then-parsing objects, as far as it can. Often a program will say "x not found," so you set x, only for the program to now say that y isn't found. LookupT removes this pain by telling /all/ missing or improperly-formatted variables at once.
 --
 -- === @Applicative@ example:
 --
 -- @
--- {-# language TypeApplications #-}
+-- {-\# language TypeApplications \#-}
 -- import Control.Monad.Trans.Lookup
 -- import Data.Functor.Identity
 -- import qualified Data.Set as S
@@ -14,7 +14,7 @@
 -- table1 = [("b", "value")]                               -- missing keys a and c (used for parsing into C)
 -- table2 = [("b", "value"), ("a", "valA"), ("c", "valC")] -- has all keys (used for parsing into C and D)
 -- table3 = [("b", "value"), ("a", "35"), ("c", "valC")]   -- has all keys, and a is an integer like it should be (used for parsing into D)
--- table4 = [("a", "3i5")]                                 -- missing keys b and c, and a is not even integer like it should be
+-- table4 = [("a", "3i5")]                                 -- missing keys b and c, and a is not even an integer like it should be
 --                                                         -- (used for parsing into D)
 -- 
 -- parseInt v = liftME (Improper v "not an integer") $ readMaybe @Int v
@@ -88,12 +88,56 @@
 --
 -- >>> runLookup $ lkupFn "Y" >>= lkupFn
 -- Left (fromList [Missing: Z])
+--
+-- === Design Decisions
+--
+-- I wrote this library before I discovered that Validation is a common @Applicative@. I was going to refactor this into terms of @Validation@ and <https://hackage.haskell.org/package/base-4.12.0.0/docs/Data-Functor-Compose.html#t:Compose Compose, an Applicative analogue to monad transformers (/e.g./ @Compose (Validation (Set ParseError) (IO a))@)>, until I realized that Validation has no monadic instance. @LookupT@ permits a monad by the fact that it looks-up things before validating them. Here's an example, parsing a config.yaml file:
+--
+-- @
+-- import Data.Set (Set)
+-- import qualified Data.Set as S
+-- import qualified Data.Bifunctor as BiF
+-- import Control.Monad.Trans.Except -- transformers package, not mtl
+-- import qualified Data.ByteString.Char8 as BS'
+-- import Data.Yaml
+--
+-- loadConfig :: ExceptT (Set LookupF) IO Config
+-- loadConfig = do
+--     raw <- liftIO $ BS'.readFile "config.yaml"
+--     yaml <- ExceptT . pure . BiF.first (S.singleton . Improper "config" . show) $ (decodeEither' raw :: Either ParseException Object)
+--     let getInObj :: Applicative m => (Value -> Either LookupF b) -> T'.Text -> Object -> LookupT m b
+--         getInObj p k o = lookup T'.unpack p (pure <% HM.lookup) yaml k
+--     ExceptT . runLookupT $ do
+--         root <- getInObj (\case Object o -> Right o; _ -> Left $ Improper "config" "not an object") "config" yaml
+--         Config
+--         <$> getInObj (\case String t -> Right t) "domain" root
+--         <*> getInObj (\case Number n -> Right $ truncate n) "port" root
+-- @
+--
+-- which returns an example web server config object, from reading-in @config.yaml@:
+--
+-- @
+-- config:
+--   domain: example.com
+--   port: 80
+-- @
+--
+-- Granted @config@ is redundant here, but you get the idea. Hierarchical lookup is important.
+--
+-- Anyway, perhaps one day I'll put the validation/parsing aspect of LookupT in terms of @Validation@. Hackage gives me three choices:
+--
+-- * <http://hackage.haskell.org/package/validation-1/docs/Data-Validation.html validation-1>
+-- * <https://hackage.haskell.org/package/either-5.0.1/docs/Data-Either-Validation.html either>
+-- * <http://hackage.haskell.org/package/validations-0.1.0.2/docs/src/Validations-Tutorial.html validations>
+--
+-- Usually I choose anything by Ed Kmett without thinking, but @validations@ more closely matches the code I've already written here, and it uses @Category@ instead of @Applicative@, which is interesting. It makes sense to think of a morphism as revealing its domain object as invalid, rather than computing a morphism, then checking to see if it's valid (much like how bind is preferable over @join . fmap@.)
 module Control.Monad.Trans.Lookup
 (
 -- * Types
   LookupT (..)
 , Lookup
-, LookupF (..)
+, LookupF (Improper)
+, improper
 -- ** Decomposer
 , runLookup
 -- ** Constructors
@@ -104,6 +148,7 @@ module Control.Monad.Trans.Lookup
 , lookupFind
 , lookupFindDesperate
 , lookupMaybe
+, fromEither
 , lookupEnv
 , lookupFile
 , lookupFileCommon
@@ -157,7 +202,7 @@ type Lookup a = LookupT Identity a
 runLookup :: Lookup a -> Either (S.Set LookupF) a
 runLookup = runIdentity . runLookupT
 
--- | Lookup failed type
+-- | Lookup failed type. There are two constructors: @Missing@ and @Improper@. However, only @Improper@ is exported; @Missing@ is called internally as part of the lookup functions.
 data LookupF
     -- | denotes that a variable could not be found
     = Missing { varName :: String }
@@ -167,6 +212,10 @@ data LookupF
         , reason :: String -- ^ description of why the parsing failed
         }
     deriving Eq
+
+-- | Convenience function for @Left . Improper _@. Probably the only time you'll use the @Improper@ constructor is using 'fromEither'
+improper :: String -> String -> Either LookupF a
+improper n r = Left (Improper n r)
 
 instance Show LookupF where
     show (Missing x) = "Missing: " <> x
@@ -217,11 +266,7 @@ instance Applicative m => Alternative (LookupT m) where
     LookupT f <|> LookupT g = LookupT $ liftA2 (nonZero (Proxy :: Proxy 'True)) f g
 
 instance Monad m => Monad (LookupT m) where
-    LookupT l >>= f = LookupT $ do
-        eiA <- l
-        case eiA of
-            Left  s -> pure $ Left s
-            Right x -> runLookupT $ f x
+    LookupT l >>= f = LookupT $ l >>= either (pure . Left) (runLookupT . f)
 
 instance MonadIO m => MonadIO (LookupT m) where
     liftIO = LookupT . liftIO . fmap pure
@@ -291,13 +336,20 @@ lookupFindDesperate :: (Monad m, Foldable t)
 lookupFindDesperate str parse predicate = LookupT . fmap (maybe (Left . S.singleton $ Missing str) Right) . runMaybeT . getAlt
     . foldMap (\i -> Alt $ lift (predicate i) >>= MaybeT . bool (pure Nothing) (either (const Nothing) Just <$> parse i))
 
--- | Produce a @LookupT@ from a @Maybe@
+-- | Produce a @LookupT@ from a @Maybe@, where @Nothing@ corresponds to a @Missing@ value
 lookupMaybe :: Monad m
             => String -- ^ variable name, for collecting into error message
             -> (i -> m (Either LookupF b)) -- ^ parsing function. As always, use @pure . pure@ to mootly lift it
             -> m (Maybe i)
             -> LookupT m b
 lookupMaybe nomos p = LookupT . (>>= maybe (pure . Left . S.singleton $ Missing nomos) (fmap (BiF.first S.singleton) . p))
+
+-- | Convert into a @LookupT@ from a @Either@. If the either is of @Left@, that will be expressed as an @Improper@ value rather than a @Missing@ value.
+fromEither :: Functor m
+           => (left -> LookupF)
+           -> m (Either left i)
+           -> LookupT m i
+fromEither f = LookupT . fmap (BiF.first (S.singleton . f))
 
 -- | 'System.Environment.lookupEnv' lifted into @LookupT IO@. Convenience function: 'lookupMaybe' wraps 'System.Environment.lookupEnv'.
 lookupEnv :: String -> LookupT IO String
@@ -310,7 +362,7 @@ lookupFileCommon f = lookup id (pure) (\x _ -> doesFileExist x >>= bool (pure No
 lookupFile :: FilePath -> LookupT IO String
 lookupFile = lookupFileCommon readFile
 
--- functions copied from NicLib.NStdLib, to avoid needing NicLib as a dependency
+-- functions copied from NicLib.NStdLib (except foldMapM, findM, and readMaybe, which are imported from rio since NicLib-0.1.8,) to avoid needing dependencies
 
 foldMapM :: (Foldable t, Monad m, Monoid b) => (a -> m b) -> t a -> m b
 foldMapM f = foldM (\acc -> fmap (mappend acc) . f) mempty
