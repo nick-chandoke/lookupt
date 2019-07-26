@@ -103,15 +103,15 @@
 --
 -- loadConfig :: ExceptT (Set LookupF) IO Config
 -- loadConfig = do
---     raw <- liftIO $ BS'.readFile "config.yaml"
---     yaml <- ExceptT . pure . BiF.first (S.singleton . Improper "config" . show) $ (decodeEither' raw :: Either ParseException Object)
---     let getInObj :: Applicative m => (Value -> Either LookupF b) -> T'.Text -> Object -> LookupT m b
---         getInObj p k o = lookup T'.unpack p (pure <% HM.lookup) yaml k
+--     raw \<- liftIO $ BS'.readFile "config.yaml"
+--     yaml \<- ExceptT . pure . BiF.first (S.singleton . Improper "config" . show) $ (decodeEither' raw :: Either ParseException Object)
+--     let getInObj :: Applicative m =\> (Value -\> Either LookupF b) -\> T'.Text -\> Object -\> LookupT m b
+--         getInObj p k o = lookup T'.unpack p (pure \<% HM.lookup) yaml k
 --     ExceptT . runLookupT $ do
---         root <- getInObj (\case Object o -> Right o; _ -> Left $ Improper "config" "not an object") "config" yaml
+--         root \<- getInObj (\case Object o -\> Right o; _ -\> Left $ Improper "config" "not an object") "config" yaml
 --         Config
---         <$> getInObj (\case String t -> Right t) "domain" root
---         <*> getInObj (\case Number n -> Right $ truncate n) "port" root
+--         \<$\> getInObj (\case String t -\> Right t) "domain" root
+--         \<*\> getInObj (\case Number n -\> Right $ truncate n) "port" root
 -- @
 --
 -- which returns an example web server config object, from reading-in @config.yaml@:

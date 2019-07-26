@@ -1,3 +1,7 @@
+note: this module may be deprecated in favor of [validation arrows](https://github.com/mavenraven/validations). I have yet to fully compare the two, but at first glance it seems likely.
+
+---
+
 # ```LookupT```
 
 *Please see the haddocks (link to hopefully soon be posted) for documentation. This document is merely a WIP summary of the haddocks.*
@@ -52,3 +56,7 @@ Yeah, it's dumb, but I gotta say it, 'cause it *can* be confusing for newcomers:
 * Monads have nothing in particular to do with IO
 * ```LookupT``` has nothing in particular to do with IO
 * ```readFile``` may throw an IO exception. I assume that ```loadConfig``` would be called within ```main```, and ```main``` would use proper exception handling (e.g. ```handle``` in the ```safe-exceptions``` package.)
+
+## TODO's:
+
+* cf. [validations](https://github.com/mavenraven/validations) ```Category```
